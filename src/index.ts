@@ -35,11 +35,17 @@ export type BatcherConfig<T, R> = {
 /* @internal */
 type _Item<T, R> = Item<T> & { at: number; resolve: (value: R | null) => void; reject: (reason?: any) => void };
 
+const createRandomUuidFn = <T>() => {
+  const crypto = require('crypto');
+
+  return (_: T) => crypto.randomUUID();
+};
+
 export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
   const { onFlush, maxSize, maxTimeInMs } = props;
   const _dataArray: Array<_Item<T, R>> = [];
   let timeout: NodeJS.Timeout | null = null;
-  const genUuid = props.genId ?? (() => require('crypto').randomUUID());
+  const genUuid = props.genId ?? createRandomUuidFn<T>();
 
   /**
    * Flushes the current batch (if any items)
