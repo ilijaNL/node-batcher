@@ -26,27 +26,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [16.x, 18.x]
-
-    # Service containers to run with `container-job`
-    services:
-      # Label used to access the service container
-      postgres:
-        # Docker Hub image
-        image: postgres:14
-        # Provide the password for postgres
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: ci
-        ports:
-          # Maps tcp port 5432 on service container to the host
-          - 5432:5432
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        node-version: [14.x, 16.x, 18.x]
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
@@ -55,9 +35,7 @@ jobs:
           cache: 'yarn'
       - run: yarn install --frozen-lockfile
       - run: yarn tc
-      - run: yarn test 
-        env:
-          PG: postgres://postgres:postgres@localhost:5432/ci
+      - run: yarn test
       - uses: romeovs/lcov-reporter-action@v0.3.1
         if: github.event_name == 'pull_request'
         with:
