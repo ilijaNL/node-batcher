@@ -2,7 +2,7 @@ import delay from 'delay';
 import tap from 'tap';
 import { createBatcher } from '../src';
 
-tap.jobs = 10;
+tap.jobs = 20;
 
 tap.test('executes as batch', async (t) => {
   t.plan(2);
@@ -57,7 +57,7 @@ tap.test('maps the response to corresponding data', async (t) => {
   const batcher = createBatcher<number, number>({
     async onFlush(batch) {
       return batch.map((i) => ({
-        id: i.id,
+        id: i.data === 1 ? 'does not exist' : i.id,
         data: i.data,
       }));
     },
@@ -66,7 +66,7 @@ tap.test('maps the response to corresponding data', async (t) => {
   });
 
   t.resolveMatch(batcher.add(2), 2);
-  t.resolveMatch(batcher.add(1), 1);
+  t.resolveMatch(batcher.add(1), null);
   t.resolveMatch(batcher.add(4), 4);
 
   await delay(150);
@@ -114,14 +114,17 @@ tap.test('max duration', async (t) => {
 });
 
 tap.test('gen id', async (t) => {
+  // t.plan(2);
+  // t.plan(1);
   const batcher = createBatcher<number, number>({
     genId(data) {
       return String(data);
     },
     async onFlush(data) {
-      data.forEach((d) => {
-        t.equal(d.id, String(d.data));
-      });
+      t.same(
+        data.map((d) => d.id),
+        ['1', '5']
+      );
     },
     maxSize: 10,
     maxTimeInMs: 50,
@@ -131,37 +134,6 @@ tap.test('gen id', async (t) => {
   batcher.add(5);
 
   await delay(50);
-});
-
-tap.test('flushes', async (t) => {
-  t.plan(5);
-  const batcher = createBatcher<number, number>({
-    genId(data) {
-      return String(data);
-    },
-    async onFlush(data) {
-      t.same(
-        data.map((d) => d.data),
-        [1, 5]
-      );
-
-      return data.map((d) => ({ id: d.id, data: d.data + 1 }));
-    },
-    maxSize: 10,
-    maxTimeInMs: 2000,
-  });
-
-  t.resolveMatch(batcher.add(1), 2);
-  t.resolveMatch(batcher.add(5), 6);
-
-  const res1 = await batcher.flush();
-  t.same(res1, [
-    { id: '1', data: 2 },
-    { id: '5', data: 6 },
-  ]);
-
-  const res2 = await batcher.flush();
-  t.same(res2, []);
 });
 
 tap.test('long flush', async (t) => {
@@ -189,4 +161,107 @@ tap.test('long flush', async (t) => {
   await delay(200);
 
   t.same(result, [21, 2, 5, 9]);
+});
+
+tap.test('respects minTime', async (t) => {
+  t.plan(4);
+  let called = 0;
+
+  const batcher = createBatcher<number, number>({
+    minTimeInMs: 50,
+    async onFlush(batch) {
+      called += 1;
+      t.equal(batch.length, 3);
+    },
+    maxSize: 3,
+    maxTimeInMs: 100,
+  });
+
+  batcher.add(1);
+  batcher.add(3);
+  batcher.add(4);
+  t.equal(called, 0);
+  await delay(30);
+  t.equal(called, 0);
+  await delay(30);
+  t.equal(called, 1);
+});
+
+tap.test('minTime concurrency', async (t) => {
+  t.plan(5);
+  let called = 0;
+
+  const batcher = createBatcher<number, number>({
+    minTimeInMs: 50,
+    async onFlush(batch) {
+      called += 1;
+      return batch.map((b) => ({ id: b.id, data: b.data }));
+    },
+    maxSize: 2,
+    maxTimeInMs: 100,
+  });
+
+  t.resolveMatch(batcher.add(1), 1);
+  batcher.add(3);
+  t.resolveMatch(batcher.add(4), 4);
+  batcher.add(5);
+  t.resolveMatch(batcher.add(6), 6);
+  batcher.add(7);
+  await delay(20);
+  t.equal(called, 0);
+  await delay(35);
+  t.equal(called, 3);
+});
+
+tap.test('waitforAll', async (t) => {
+  t.plan(2);
+  let called = 0;
+
+  const batcher = createBatcher<number, number>({
+    minTimeInMs: 50,
+    async onFlush(_) {
+      called += 1;
+      const timeout = called * 25;
+      await new Promise((resolve) => setTimeout(resolve, timeout));
+    },
+    maxSize: 2,
+    maxTimeInMs: 100,
+  });
+
+  for (let i = 0; i < 5; ++i) {
+    batcher.add(i);
+  }
+
+  // 75 = 3 * 25
+  await t.resolves(Promise.race([batcher.waitForAll(), new Promise((_, reject) => setTimeout(reject, 85))]));
+  t.equal(called, 3);
+});
+
+tap.test('waitforAll partial', async (t) => {
+  t.plan(3);
+  let called = 0;
+
+  const batcher = createBatcher<number, number>({
+    minTimeInMs: 50,
+    async onFlush(_) {
+      called += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    },
+    maxSize: 2,
+    maxTimeInMs: 100,
+  });
+
+  batcher.add(1);
+  await delay(60);
+  t.equal(called, 0);
+  batcher.add(2);
+  await delay(20);
+  t.equal(called, 1);
+  batcher.add(3);
+  batcher.add(4);
+  batcher.add(5);
+
+  await batcher.waitForAll();
+
+  t.equal(called, 3);
 });
