@@ -72,17 +72,17 @@ async function flush<T, R>(
 
   const result = await onFlush(currentDataArray).catch((e) => {
     // reject & rethrow
-    _dataArray.forEach((i) => i.reject(e));
+    _dataArray.forEach((i) => i.cancelled === false && i.reject(e));
     throw e;
   });
 
   if (Array.isArray(result)) {
     // map responses to the origin requests
     const map = new Map(result.map((obj) => [obj.id, obj.data]));
-    _dataArray.forEach((i) => i.resolve(map.get(i.id) ?? null));
+    _dataArray.forEach((i) => i.cancelled === false && i.resolve(map.get(i.id) ?? null));
   } else {
     // settle all promises
-    _dataArray.forEach((i) => i.resolve(null));
+    _dataArray.forEach((i) => i.cancelled === false && i.resolve(null));
   }
 
   return result ?? [];
