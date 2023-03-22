@@ -1,5 +1,11 @@
 # node-batcher
 
+## 0.1.1
+
+### Patch Changes
+
+- 12b92a3: Ability to cancel flush items
+
 ## 0.1.0
 
 ### Minor Changes
