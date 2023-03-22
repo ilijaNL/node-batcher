@@ -2,6 +2,10 @@ import delay from 'delay';
 import tap from 'tap';
 import { createBatcher } from '../src';
 
+function resolvesInTime<T>(p1: Promise<T>, ms: number) {
+  return Promise.race([p1, new Promise((_, reject) => setTimeout(reject, ms))]);
+}
+
 tap.jobs = 20;
 
 tap.test('executes as batch', async (t) => {
@@ -264,4 +268,51 @@ tap.test('waitforAll partial', async (t) => {
   await batcher.waitForAll();
 
   t.equal(called, 3);
+});
+
+tap.test('cancel all items', async (t) => {
+  const batcher = createBatcher<number, number>({
+    minTimeInMs: 50,
+    async onFlush() {
+      t.fail('should not be called');
+    },
+    maxSize: 2,
+    maxTimeInMs: 100,
+  });
+
+  const b1 = batcher.add(2);
+  const b2 = batcher.add(3);
+  t.resolveMatch(resolvesInTime(b1, 5), 88);
+  t.resolveMatch(resolvesInTime(b2, 5), null);
+  b1.cancel(88);
+  b2.cancel(null);
+
+  await batcher.waitForAll();
+});
+
+tap.test('cancel item', async (t) => {
+  const batcher = createBatcher<number, number>({
+    minTimeInMs: 50,
+    async onFlush(batch) {
+      t.equal(batch.length, 1);
+    },
+    maxSize: 2,
+    maxTimeInMs: 100,
+  });
+
+  const b1 = batcher.add(2);
+  t.resolveMatch(batcher.add(2), null);
+
+  t.resolveMatch(batcher.add(3), null);
+  const p2 = batcher.add(8);
+
+  t.resolveMatch(resolvesInTime(b1, 5), 88);
+  b1.cancel(88);
+
+  // should resolve directly
+  t.resolveMatch(resolvesInTime(p2, 5), 5);
+  p2.cancel(5);
+  p2.cancel(8);
+
+  await batcher.waitForAll();
 });

@@ -39,7 +39,12 @@ export type BatcherConfig<T, R> = {
 };
 
 /* @internal */
-type _Item<T, R> = Item<T> & { at: number; resolve: (value: R | null) => void; reject: (reason?: any) => void };
+type _Item<T, R> = Item<T> & {
+  at: number;
+  resolve: (value: R | null) => void;
+  reject: (reason?: any) => void;
+  cancelled: boolean;
+};
 
 /**
  * Flushes the current batch (if any items)
@@ -54,29 +59,30 @@ async function flush<T, R>(
     data: R;
   }>
 > {
-  // already flushed somewhere else
-  /* istanbul ignore next */
-  if (dataArray.length === 0) {
+  // remove all cancelled items from the flush, since they already are cancelled somehwere
+  const _dataArray = dataArray.filter((i) => i.cancelled === false);
+
+  if (_dataArray.length === 0) {
     return [];
   }
 
   const now = Date.now();
 
-  const currentDataArray = dataArray.map<Item<T>>((d) => ({ data: d.data, delta_ms: now - d.at, id: d.id }));
+  const currentDataArray = _dataArray.map<Item<T>>((d) => ({ data: d.data, delta_ms: now - d.at, id: d.id }));
 
   const result = await onFlush(currentDataArray).catch((e) => {
     // reject & rethrow
-    dataArray.forEach((i) => i.reject(e));
+    _dataArray.forEach((i) => i.reject(e));
     throw e;
   });
 
   if (Array.isArray(result)) {
     // map responses to the origin requests
     const map = new Map(result.map((obj) => [obj.id, obj.data]));
-    dataArray.forEach((i) => i.resolve(map.get(i.id) ?? null));
+    _dataArray.forEach((i) => i.resolve(map.get(i.id) ?? null));
   } else {
     // settle all promises
-    dataArray.forEach((i) => i.resolve(null));
+    _dataArray.forEach((i) => i.resolve(null));
   }
 
   return result ?? [];
@@ -95,7 +101,6 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
   const genUuid = props.genId ?? createRandomUuidFn<T>();
 
   const pendingFlushes: Array<{
-    timeout: NodeJS.Timeout | null;
     settle: (() => ReturnType<typeof flush>) | null;
     promise: Promise<any>;
   }> = [];
@@ -108,23 +113,31 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
     const itemsToFlush = [..._dataArray];
     _dataArray.length = 0;
 
-    let timeoutId: NodeJS.Timeout | null = null;
-    let settle: ((value: unknown) => void) | null = null;
+    let settle: (() => void) | null = null;
 
     const timePending = Date.now() - itemsToFlush[0]!.at;
     const timeToFlush = Math.max((minTimeInMs ?? 0) - timePending, 0);
     const prom =
       timeToFlush > 0
-        ? new Promise((resolve) => {
-            settle = resolve;
-            timeoutId = setTimeout(resolve, timeToFlush);
+        ? new Promise<void>((resolve) => {
+            let isSettled = false;
+            settle = () => {
+              /* istanbul ignore next */
+              if (isSettled) {
+                return;
+              }
+
+              isSettled = true;
+              clearTimeout(timeoutId);
+              resolve();
+            };
+            const timeoutId = setTimeout(settle, timeToFlush);
           }).then(() => flush(onFlush, itemsToFlush))
         : flush(onFlush, itemsToFlush);
 
     const flushItem = {
       promise: prom,
       settle,
-      timeout: timeoutId,
     };
 
     pendingFlushes.push(flushItem);
@@ -141,12 +154,21 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
 
   /**
    * Add an item to the current batch.
-   * Resolves the promise when the batch is flushed
+   * Resolves the promise when the batch is flushed or is cancelled
    * @param data
    */
-  function addAndWait(data: T): Promise<R | null> {
+  function addAndWait(data: T): Promise<R | null> & { cancel: (value: R | null) => void } {
+    let cancel!: (value: R | null) => void;
     const promise = new Promise<R | null>((resolve, reject) => {
-      _dataArray.push({ data: data, delta_ms: 0, at: Date.now(), id: genUuid(data), reject, resolve });
+      const item = { data: data, delta_ms: 0, at: Date.now(), id: genUuid(data), reject, resolve, cancelled: false };
+      cancel = (value: R | null) => {
+        if (item.cancelled) {
+          return;
+        }
+        item.cancelled = true;
+        resolve(value);
+      };
+      _dataArray.push(item);
     });
 
     if (_dataArray.length >= maxSize) {
@@ -160,7 +182,7 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
       batchTimeout = setTimeout(_flush, maxTimeInMs);
     }
 
-    return promise;
+    return Object.assign(promise, { cancel });
   }
 
   return {
@@ -175,7 +197,6 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
       _flush();
 
       pendingFlushes.forEach((f) => {
-        f.timeout && clearTimeout(f.timeout);
         f.settle?.();
       });
 
