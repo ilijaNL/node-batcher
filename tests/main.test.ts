@@ -1,4 +1,5 @@
 import delay from 'delay';
+import EventEmitter, { once } from 'events';
 import tap from 'tap';
 import { createBatcher } from '../src';
 
@@ -237,7 +238,7 @@ tap.test('waitforAll', async (t) => {
   }
 
   // 75 = 3 * 25
-  await t.resolves(Promise.race([batcher.waitForAll(), new Promise((_, reject) => setTimeout(reject, 85))]));
+  await t.resolves(resolvesInTime(batcher.waitForAll(), 95));
   t.equal(called, 3);
 });
 
@@ -315,4 +316,29 @@ tap.test('cancel item', async (t) => {
   p2.cancel(8);
 
   await batcher.waitForAll();
+});
+
+tap.test('cancel item during batch', async (t) => {
+  const ee = new EventEmitter();
+  const batcher = createBatcher<number, number>({
+    minTimeInMs: 10,
+    async onFlush(batch) {
+      t.equal(batch[0]?.data, 2);
+      ee.emit('flush');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      ee.emit('flushed');
+      return batch.map((i) => ({ id: i.id, data: i.data }));
+    },
+    maxSize: 2,
+    maxTimeInMs: 100,
+  });
+
+  const b1 = batcher.add(2);
+
+  await once(ee, 'flush');
+  b1.cancel(1234);
+
+  await t.resolveMatch(resolvesInTime(b1, 5), 1234);
+  await once(ee, 'flushed');
+  t.resolveMatch(b1, 1234);
 });
