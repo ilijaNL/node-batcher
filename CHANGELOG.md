@@ -1,5 +1,11 @@
 # node-batcher
 
+## 0.1.2
+
+### Patch Changes
+
+- 0371c42: Fix memory leak
+
 ## 0.1.1
 
 ### Patch Changes
