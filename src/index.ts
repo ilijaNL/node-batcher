@@ -67,7 +67,6 @@ async function flush<T, R>(
   }
 
   const now = Date.now();
-
   const currentDataArray = _dataArray.map<Item<T>>((d) => ({ data: d.data, delta_ms: now - d.at, id: d.id }));
 
   const result = await onFlush(currentDataArray).catch((e) => {
@@ -94,62 +93,73 @@ const createRandomUuidFn = <T>() => {
   return (_: T) => crypto.randomUUID();
 };
 
+class FlushBatch {
+  public readonly promise: Promise<unknown>;
+
+  private _isSettled: boolean = false;
+  private _timeout: NodeJS.Timeout | null = null;
+  private _resolve: ((value: void | PromiseLike<void>) => void) | null = null;
+
+  constructor(flushPromise: () => Promise<unknown>, timeToFlush: number) {
+    this.promise =
+      timeToFlush > 0
+        ? new Promise<void>((resolve) => {
+            this._resolve = resolve;
+            this._timeout = setTimeout(this._resolve.bind(this), timeToFlush);
+          }).then(flushPromise)
+        : flushPromise();
+  }
+
+  public settle() {
+    /* istanbul ignore next */
+    if (this._isSettled) {
+      return;
+    }
+
+    this._isSettled = true;
+
+    if (this._timeout) {
+      clearTimeout(this._timeout);
+    }
+
+    if (this._resolve) {
+      this._resolve();
+    }
+  }
+}
+
 export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
   const { onFlush, maxSize, maxTimeInMs, minTimeInMs } = props;
   const _dataArray: Array<_Item<T, R>> = [];
   let batchTimeout: NodeJS.Timeout | null = null;
   const genUuid = props.genId ?? createRandomUuidFn<T>();
 
-  const pendingFlushes: Array<{
-    settle: (() => ReturnType<typeof flush>) | null;
-    promise: Promise<any>;
-  }> = [];
+  const pendingFlushes: Array<FlushBatch> = [];
 
   function _flush() {
     /* istanbul ignore next */
     if (_dataArray.length === 0) {
       return Promise.resolve([]);
     }
+
     const itemsToFlush = [..._dataArray];
     _dataArray.length = 0;
 
-    let settle: (() => void) | null = null;
-
     const timePending = Date.now() - itemsToFlush[0]!.at;
     const timeToFlush = Math.max((minTimeInMs ?? 0) - timePending, 0);
-    const prom =
-      timeToFlush > 0
-        ? new Promise<void>((resolve) => {
-            let isSettled = false;
-            settle = () => {
-              /* istanbul ignore next */
-              if (isSettled) {
-                return;
-              }
 
-              isSettled = true;
-              clearTimeout(timeoutId);
-              resolve();
-            };
-            const timeoutId = setTimeout(settle, timeToFlush);
-          }).then(() => flush(onFlush, itemsToFlush))
-        : flush(onFlush, itemsToFlush);
-
-    const flushItem = {
-      promise: prom,
-      settle,
-    };
+    const flushItem = new FlushBatch(() => flush(onFlush, itemsToFlush), timeToFlush);
 
     pendingFlushes.push(flushItem);
 
     // catch and remove when complete
-    prom
+    flushItem.promise
       .catch(() => {})
       .finally(() => {
-        pendingFlushes.filter((p) => p !== flushItem);
+        pendingFlushes.splice(pendingFlushes.indexOf(flushItem), 1);
       });
 
-    return prom;
+    return flushItem.promise;
   }
 
   /**
@@ -182,6 +192,7 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
       batchTimeout = setTimeout(_flush, maxTimeInMs);
     }
 
+    // this is probably not memory friendly to assign it in this way
     return Object.assign(promise, { cancel });
   }
 
@@ -196,12 +207,13 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
       batchTimeout && clearTimeout(batchTimeout);
       _flush();
 
-      pendingFlushes.forEach((f) => {
-        f.settle?.();
-      });
-
       // wait for all promises to complete
-      await Promise.all(pendingFlushes.map((f) => f.promise));
+      await Promise.all(
+        pendingFlushes.map((f) => {
+          f.settle();
+          return f.promise;
+        })
+      );
     },
   };
 }
