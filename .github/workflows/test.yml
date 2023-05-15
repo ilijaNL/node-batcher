@@ -14,7 +14,9 @@ jobs:
   test:
     # Containers must run in Linux based operating systems
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read  # Required when overriding permissions
+      pull-requests: write  # <== Add this to allow action to modify your PR
     strategy:
       matrix:
         node-version: [16.x, 18.x, 20.x]
