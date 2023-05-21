@@ -1,5 +1,11 @@
 # node-batcher
 
+## 0.1.3
+
+### Patch Changes
+
+- 43b34e5: Optimize flush batches store
+
 ## 0.1.2
 
 ### Patch Changes
