@@ -243,7 +243,6 @@ tap.test('waitforAll', async (t) => {
 });
 
 tap.test('waitforAll partial', async (t) => {
-  t.plan(3);
   let called = 0;
 
   const batcher = createBatcher<number, number>({
@@ -269,6 +268,7 @@ tap.test('waitforAll partial', async (t) => {
   await batcher.waitForAll();
 
   t.equal(called, 3);
+  t.equal(batcher.amountOfPendingFlushes(), 0);
 });
 
 tap.test('cancel all items', async (t) => {
@@ -289,6 +289,8 @@ tap.test('cancel all items', async (t) => {
   b2.cancel(null);
 
   await batcher.waitForAll();
+
+  t.equal(batcher.amountOfPendingFlushes(), 0);
 });
 
 tap.test('cancel item', async (t) => {

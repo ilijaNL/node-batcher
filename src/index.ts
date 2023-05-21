@@ -128,13 +128,15 @@ class FlushBatch {
   }
 }
 
+export type Batcher<T, R = void> = ReturnType<typeof createBatcher<T, R>>;
+
 export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
   const { onFlush, maxSize, maxTimeInMs, minTimeInMs } = props;
   const _dataArray: Array<_Item<T, R>> = [];
   let batchTimeout: NodeJS.Timeout | null = null;
   const genUuid = props.genId ?? createRandomUuidFn<T>();
 
-  const pendingFlushes: Array<FlushBatch> = [];
+  const pendingFlushes = new Set<FlushBatch>();
 
   function _flush() {
     /* istanbul ignore next */
@@ -150,13 +152,14 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
 
     const flushItem = new FlushBatch(() => flush(onFlush, itemsToFlush), timeToFlush);
 
-    pendingFlushes.push(flushItem);
+    pendingFlushes.add(flushItem);
 
     // catch and remove when complete
     flushItem.promise
       .catch(() => {})
       .finally(() => {
-        pendingFlushes.splice(pendingFlushes.indexOf(flushItem), 1);
+        // clean up
+        pendingFlushes.delete(flushItem);
       });
 
     return flushItem.promise;
@@ -164,8 +167,9 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
 
   /**
    * Add an item to the current batch.
-   * Resolves the promise when the batch is flushed or is cancelled
-   * @param data
+   * Resolves the promise when the batch is flushed or is cancelled.
+   * Returns a cancelable promise, which can be cancelled with a value.
+   * Note that this does not ensure that the item is being flushed.
    */
   function addAndWait(data: T): Promise<R | null> & { cancel: (value: R | null) => void } {
     let cancel!: (value: R | null) => void;
@@ -198,8 +202,9 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
 
   return {
     add: addAndWait,
+    amountOfPendingFlushes: () => pendingFlushes.size,
     /**
-     * Immediatly flushes all the batches and waits for all flushes to complete
+     * Immediatly flushes all the batches and waits for all flushes to complete.
      * This function is useful when shutting down the service
      */
     async waitForAll() {
@@ -209,7 +214,7 @@ export function createBatcher<T, R = void>(props: BatcherConfig<T, R>) {
 
       // wait for all promises to complete
       await Promise.all(
-        pendingFlushes.map((f) => {
+        Array.from(pendingFlushes).map((f) => {
           f.settle();
           return f.promise;
         })
